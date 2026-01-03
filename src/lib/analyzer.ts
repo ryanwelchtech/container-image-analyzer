@@ -299,6 +299,275 @@ const rules: Rule[] = [
       return hasExpose ? -1 : null;
     }
   },
+
+  // Additional Critical Issues
+  {
+    id: 'DL018',
+    severity: 'critical',
+    title: 'Using ARG for secrets',
+    description: 'ARG values are visible in docker history and image metadata, exposing sensitive data.',
+    recommendation: 'Use --mount=type=secret with BuildKit for secrets, never ARG or ENV',
+    check: (lines) => {
+      const secretPatterns = [
+        /^ARG\s+.*password/i,
+        /^ARG\s+.*secret/i,
+        /^ARG\s+.*api[_-]?key/i,
+        /^ARG\s+.*token/i,
+        /^ARG\s+.*credential/i,
+      ];
+      for (let i = 0; i < lines.length; i++) {
+        if (secretPatterns.some(pattern => pattern.test(lines[i]))) {
+          return i + 1;
+        }
+      }
+      return -1;
+    }
+  },
+  {
+    id: 'DL019',
+    severity: 'critical',
+    title: 'Using shell form for CMD/ENTRYPOINT',
+    description: 'Shell form does not pass signals properly and can lead to PID 1 issues and command injection.',
+    recommendation: 'Use exec form: CMD ["executable", "param1"] instead of CMD executable param1',
+    check: (lines) => {
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (/^(CMD|ENTRYPOINT)\s+[^[]/.test(line)) {
+          return i + 1;
+        }
+      }
+      return -1;
+    }
+  },
+  {
+    id: 'DL020',
+    severity: 'critical',
+    title: 'Privileged port exposure without dropping privileges',
+    description: 'Exposing ports < 1024 typically requires root, indicating the container runs as root.',
+    recommendation: 'Use non-privileged ports (>1024) or properly drop privileges after binding',
+    check: (lines) => {
+      for (let i = 0; i < lines.length; i++) {
+        const match = lines[i].match(/^EXPOSE\s+(\d+)/i);
+        if (match && parseInt(match[1]) < 1024) {
+          // Check if USER instruction exists
+          const hasUser = lines.some(line => /^USER\s+(?!root)/i.test(line.trim()));
+          if (!hasUser) {
+            return i + 1;
+          }
+        }
+      }
+      return -1;
+    }
+  },
+
+  // Additional High Issues
+  {
+    id: 'DL021',
+    severity: 'high',
+    title: 'Package versions not pinned',
+    description: 'Installing packages without version pins can lead to non-reproducible builds and vulnerabilities.',
+    recommendation: 'Pin package versions: apt-get install package=1.2.3 or apk add package=1.2.3-r0',
+    check: (lines, dockerfile) => {
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        // Check for apt-get install without version
+        if (/apt-get install.*\s+[a-z0-9-]+(?!\s*=)(?:\s|$)/i.test(line) && !/=/i.test(line)) {
+          return i + 1;
+        }
+        // Check for apk add without version
+        if (/apk add.*\s+[a-z0-9-]+(?!\s*=)(?:\s|$)/i.test(line) && !/=/i.test(line) && !/--no-cache/.test(line)) {
+          return i + 1;
+        }
+      }
+      return -1;
+    }
+  },
+  {
+    id: 'DL022',
+    severity: 'high',
+    title: 'apt-get update run separately',
+    description: 'Running apt-get update separately can use cached outdated package lists.',
+    recommendation: 'Chain apt-get update && apt-get install in same RUN command',
+    check: (lines) => {
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (/^RUN\s+apt-get update\s*$/i.test(line) || /^RUN\s+apt update\s*$/i.test(line)) {
+          return i + 1;
+        }
+      }
+      return -1;
+    }
+  },
+  {
+    id: 'DL023',
+    severity: 'high',
+    title: 'Missing pipefail for shell scripts',
+    description: 'Without pipefail, errors in piped commands are ignored, potentially hiding failures.',
+    recommendation: 'Add SHELL ["/bin/bash", "-o", "pipefail", "-c"] or use set -o pipefail in RUN',
+    check: (lines, dockerfile) => {
+      const hasPipe = dockerfile.includes(' | ');
+      const hasPipefail = dockerfile.includes('pipefail') || /SHELL.*pipefail/.test(dockerfile);
+      if (hasPipe && !hasPipefail) {
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].includes(' | ')) {
+            return i + 1;
+          }
+        }
+      }
+      return -1;
+    }
+  },
+  {
+    id: 'DL024',
+    severity: 'high',
+    title: 'COPY from untrusted source',
+    description: 'COPY --from without explicit stage name or digest may pull from untrusted registries.',
+    recommendation: 'Use named stages or specific digests: COPY --from=builder or COPY --from=image@sha256:...',
+    check: (lines) => {
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        // Check for COPY --from with a numeric index
+        if (/COPY\s+--from=\d+/.test(line)) {
+          return i + 1;
+        }
+      }
+      return -1;
+    }
+  },
+
+  // Additional Medium Issues
+  {
+    id: 'DL025',
+    severity: 'medium',
+    title: 'Installing unnecessary packages',
+    description: 'Installing development tools, text editors, or debug tools increases attack surface.',
+    recommendation: 'Avoid installing vim, nano, curl, wget, git in production images. Use multi-stage builds.',
+    check: (lines) => {
+      const unnecessaryPackages = ['vim', 'nano', 'emacs', 'git', 'gcc', 'g++', 'make', 'build-essential'];
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].toLowerCase();
+        if ((/apt-get install|apk add|yum install/.test(line)) &&
+            unnecessaryPackages.some(pkg => new RegExp(`\\b${pkg}\\b`).test(line))) {
+          return i + 1;
+        }
+      }
+      return -1;
+    }
+  },
+  {
+    id: 'DL026',
+    severity: 'medium',
+    title: 'Missing .dockerignore reference',
+    description: 'Without .dockerignore, sensitive files like .git, .env, secrets may be copied into image.',
+    recommendation: 'Create .dockerignore to exclude: .git, .env, *.md, node_modules, secrets, etc.',
+    check: (lines) => {
+      // Check for COPY . or COPY ./ which would benefit from .dockerignore
+      for (let i = 0; i < lines.length; i++) {
+        if (/^COPY\s+\.(?:\/|\s)/.test(lines[i].trim())) {
+          return i + 1;
+        }
+      }
+      return -1;
+    }
+  },
+  {
+    id: 'DL027',
+    severity: 'medium',
+    title: 'Not using --chown in COPY',
+    description: 'COPY without --chown requires additional RUN chown layer, increasing image size.',
+    recommendation: 'Use COPY --chown=user:group for better layer efficiency',
+    check: (lines) => {
+      const hasUser = lines.some(line => /^USER\s+(?!root)/i.test(line.trim()));
+      if (hasUser) {
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i].trim();
+          if (/^COPY\s+(?!--chown)/.test(line)) {
+            return i + 1;
+          }
+        }
+      }
+      return -1;
+    }
+  },
+  {
+    id: 'DL028',
+    severity: 'medium',
+    title: 'Using absolute paths without WORKDIR',
+    description: 'Hardcoding absolute paths makes the Dockerfile less portable and harder to maintain.',
+    recommendation: 'Set WORKDIR and use relative paths for better maintainability',
+    check: (lines) => {
+      const hasWorkdir = lines.some(line => /^WORKDIR/i.test(line.trim()));
+      if (!hasWorkdir) {
+        for (let i = 0; i < lines.length; i++) {
+          if (/COPY.*\/[a-z]/i.test(lines[i]) || /RUN.*cd\s+\//i.test(lines[i])) {
+            return i + 1;
+          }
+        }
+      }
+      return -1;
+    }
+  },
+
+  // Additional Low Issues
+  {
+    id: 'DL029',
+    severity: 'low',
+    title: 'Missing security labels',
+    description: 'No security-related labels for tracking, compliance, or runtime security policies.',
+    recommendation: 'Add labels: LABEL security.contact="security@example.com" org.opencontainers.image.version="1.0"',
+    check: (lines) => {
+      const hasSecurityLabel = lines.some(line =>
+        /LABEL.*security\./i.test(line) ||
+        /LABEL.*org\.opencontainers/i.test(line)
+      );
+      return hasSecurityLabel ? -1 : null;
+    }
+  },
+  {
+    id: 'DL030',
+    severity: 'low',
+    title: 'Setting environment without explicit values',
+    description: 'ENV with variables that reference other vars can lead to unexpected behavior.',
+    recommendation: 'Be explicit with ENV values and avoid complex variable expansion',
+    check: (lines) => {
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (/^ENV\s+\w+\s*=\s*\$/.test(line)) {
+          return i + 1;
+        }
+      }
+      return -1;
+    }
+  },
+
+  // Additional Info Issues
+  {
+    id: 'DL031',
+    severity: 'info',
+    title: 'No build-time metadata labels',
+    description: 'Missing build metadata makes it hard to track image provenance and versions.',
+    recommendation: 'Add OCI labels: org.opencontainers.image.created, .version, .revision, .source',
+    check: (lines) => {
+      const hasOCILabels = lines.some(line => /LABEL.*org\.opencontainers\.image\./i.test(line));
+      return hasOCILabels ? -1 : null;
+    }
+  },
+  {
+    id: 'DL032',
+    severity: 'info',
+    title: 'Consider using distroless base',
+    description: 'Distroless images contain only your app and runtime dependencies, nothing else.',
+    recommendation: 'Consider gcr.io/distroless/static or /base for minimal attack surface',
+    check: (lines) => {
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (/^FROM/i.test(line) && !line.includes('distroless') && !line.includes('scratch')) {
+          return i + 1;
+        }
+      }
+      return -1;
+    }
+  },
 ];
 
 export function analyzeDockerfile(dockerfile: string): AnalysisSummary {
