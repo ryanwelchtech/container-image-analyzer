@@ -26,7 +26,7 @@ export default function Footer() {
             </a>
           </div>
           <div className="flex items-center gap-4 text-sm text-gray-500">
-            <span>17 Security Rules</span>
+            <span>32 Security Rules</span>
             <span>&bull;</span>
             <span>Client-Side Analysis</span>
             <span>&bull;</span>

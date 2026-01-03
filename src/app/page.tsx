@@ -7,6 +7,7 @@ import DockerfileEditor from '@/components/DockerfileEditor';
 import ScoreDisplay from '@/components/ScoreDisplay';
 import ResultsList from '@/components/ResultsList';
 import SampleSelector from '@/components/SampleSelector';
+import RecommendedSolutions from '@/components/RecommendedSolutions';
 import { analyzeDockerfile, sampleDockerfiles, AnalysisSummary } from '@/lib/analyzer';
 
 export default function Home() {
@@ -70,7 +71,10 @@ export default function Home() {
             )}
 
             {summary && (
-              <ResultsList results={summary.results} />
+              <>
+                <RecommendedSolutions summary={summary} originalDockerfile={dockerfile} />
+                <ResultsList results={summary.results} />
+              </>
             )}
 
             {!dockerfile.trim() && (
