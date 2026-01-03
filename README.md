@@ -2,7 +2,7 @@
 
 A client-side Dockerfile security scanner that provides instant feedback on vulnerabilities, best practice violations, and actionable recommendations.
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/ryanwelchtech/container-image-analyzer)
+🔗 **[Live Demo](https://container-image-analyzer.vercel.app/)** | [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/ryanwelchtech/container-image-analyzer)
 
 ## Features
 
@@ -91,9 +91,9 @@ Or use the one-click deploy button above.
 
 The application includes three sample Dockerfiles to demonstrate the analyzer:
 
-- **Insecure Example** - Multiple critical and high severity issues
-- **Basic Example** - Some medium and low severity issues
-- **Secure Example** - Follows best practices with minimal issues
+- **Insecure Example** (Grade: F, 0-20%) - Multiple critical and high severity issues including :latest tag, hardcoded secrets, shell form CMD, no USER, no HEALTHCHECK
+- **Basic Example** (Grade: C-D, 60-75%) - Basic security practices with HEALTHCHECK, USER, and pinned versions but missing multi-stage builds and some optimizations
+- **Secure Example** (Grade: A, 95%+) - Follows best practices with multi-stage builds, Alpine base, non-root user, HEALTHCHECK, OCI labels, and specific COPY paths
 
 ## Security Rules Reference
 

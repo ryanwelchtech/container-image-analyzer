@@ -632,29 +632,39 @@ COPY . .
 RUN npm install
 RUN npm run build
 ENV API_KEY="sk-1234567890abcdef"
-CMD ["node", "server.js"]`,
+CMD node server.js`,
 
-  basic: `FROM node:20
+  basic: `FROM node:20.10.0
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci
-COPY . .
+RUN npm ci --omit=dev
+COPY src/ ./src/
+COPY public/ ./public/
+RUN addgroup -g 1001 appgroup && adduser -u 1001 -G appgroup -D appuser
+USER appuser
 EXPOSE 3000
+HEALTHCHECK --interval=30s CMD node healthcheck.js || exit 1
+LABEL maintainer="dev@example.com"
 CMD ["node", "server.js"]`,
 
   secure: `FROM node:20.10.0-alpine AS builder
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci --only=production
+RUN npm ci --only=production && npm cache clean --force
 
 FROM node:20.10.0-alpine
 WORKDIR /app
 RUN addgroup -g 1001 -S nodejs && adduser -S nextjs -u 1001
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules ./node_modules
-COPY --chown=nextjs:nodejs . .
+COPY --chown=nextjs:nodejs package*.json ./
+COPY --chown=nextjs:nodejs src/ ./src/
+COPY --chown=nextjs:nodejs public/ ./public/
 USER nextjs
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=3s CMD wget -qO- http://localhost:3000/health || exit 1
-LABEL maintainer="developer@example.com"
+LABEL maintainer="security@example.com"
+LABEL org.opencontainers.image.source="https://github.com/example/app"
+LABEL org.opencontainers.image.version="1.0.0"
+LABEL org.opencontainers.image.created="2026-01-03T00:00:00Z"
 CMD ["node", "server.js"]`
 };
