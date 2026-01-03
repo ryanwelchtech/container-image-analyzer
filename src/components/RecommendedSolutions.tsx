@@ -25,100 +25,162 @@ export default function RecommendedSolutions({ summary, originalDockerfile }: Re
   const generateFixedDockerfile = (): string => {
     const lines = originalDockerfile.split('\n');
     let fixed = [...lines];
-    const issues = summary.results;
+    const issueIds = new Set(summary.results.map(r => r.id));
 
-    // Apply automatic fixes based on detected issues
+    // Check current state
     let hasUser = fixed.some(line => /^USER\s+(?!root)/i.test(line.trim()));
     let hasHealthcheck = fixed.some(line => /^HEALTHCHECK/i.test(line.trim()));
     let hasWorkdir = fixed.some(line => /^WORKDIR/i.test(line.trim()));
-    let hasLabel = fixed.some(line => /^LABEL.*maintainer/i.test(line.trim()));
+    let hasMaintainerLabel = fixed.some(line => /^LABEL.*maintainer/i.test(line.trim()));
+    let hasOCILabels = fixed.some(line => /^LABEL.*org\.opencontainers\.image/i.test(line.trim()));
 
-    // Fix 1: Replace :latest with specific version
-    fixed = fixed.map(line => {
-      if (/^FROM\s+node:latest/i.test(line)) {
-        return line.replace(':latest', ':20.10.0-alpine');
+    // Fix DL003: Replace :latest with specific version
+    if (issueIds.has('DL003')) {
+      fixed = fixed.map(line => {
+        if (/^FROM\s+node:latest/i.test(line)) {
+          return 'FROM node:20.10.0-alpine';
+        }
+        if (/^FROM\s+python:latest/i.test(line)) {
+          return 'FROM python:3.11-alpine';
+        }
+        if (/^FROM\s+([^:@\s]+):latest/i.test(line)) {
+          return line.replace(':latest', ':stable-alpine');
+        }
+        if (/^FROM\s+([^:@\s]+)\s*$/i.test(line)) {
+          const match = line.match(/^FROM\s+([^:@\s]+)/i);
+          if (match && !line.includes('AS')) {
+            return `FROM ${match[1]}:stable-alpine`;
+          }
+        }
+        return line;
+      });
+    }
+
+    // Fix DL002: Remove hardcoded secrets
+    if (issueIds.has('DL002')) {
+      fixed = fixed.filter(line => {
+        const hasSecret = /password\s*[=:]\s*['"]\w+['"]/i.test(line) ||
+                         /api[_-]?key\s*[=:]\s*['"]\w+['"]/i.test(line) ||
+                         /secret\s*[=:]\s*['"]\w+['"]/i.test(line);
+        return !hasSecret;
+      });
+    }
+
+    // Fix DL019: Convert shell form to exec form
+    if (issueIds.has('DL019')) {
+      fixed = fixed.map(line => {
+        const trimmed = line.trim();
+        if (/^CMD\s+(?!\[)/.test(trimmed)) {
+          const parts = trimmed.split(/\s+/).slice(1);
+          return `CMD ["${parts.join('", "')}"]`;
+        }
+        if (/^ENTRYPOINT\s+(?!\[)/.test(trimmed)) {
+          const parts = trimmed.split(/\s+/).slice(1);
+          return `ENTRYPOINT ["${parts.join('", "')}"]`;
+        }
+        return line;
+      });
+    }
+
+    // Fix DL008: Add WORKDIR if missing
+    if (issueIds.has('DL008') && !hasWorkdir) {
+      const fromIndex = fixed.findIndex(line => /^FROM/i.test(line.trim()));
+      if (fromIndex !== -1) {
+        fixed.splice(fromIndex + 1, 0, '', 'WORKDIR /app');
       }
-      if (/^FROM\s+python:latest/i.test(line)) {
-        return line.replace(':latest', ':3.11-alpine');
+    }
+
+    // Fix DL009: Replace wildcard COPY with specific paths
+    if (issueIds.has('DL009') || issueIds.has('DL026')) {
+      fixed = fixed.map(line => {
+        if (/^COPY\s+\.\s+\./.test(line.trim())) {
+          return line.replace('COPY . .', 'COPY src/ ./src/\nCOPY package*.json ./');
+        }
+        return line;
+      });
+    }
+
+    // Fix DL006: Add package cleanup
+    if (issueIds.has('DL006')) {
+      fixed = fixed.map(line => {
+        if (/apt-get install/i.test(line) && !/rm -rf \/var\/lib\/apt/.test(line)) {
+          return line.trimEnd() + ' && rm -rf /var/lib/apt/lists/*';
+        }
+        if (/apk add/i.test(line) && !/--no-cache/.test(line)) {
+          return line.replace(/apk add/i, 'apk add --no-cache');
+        }
+        return line;
+      });
+    }
+
+    // Fix DL001: Add USER if missing
+    if (issueIds.has('DL001') && !hasUser) {
+      const cmdIndex = fixed.findIndex(line => /^(CMD|ENTRYPOINT)/i.test(line.trim()));
+      if (cmdIndex !== -1) {
+        fixed.splice(cmdIndex, 0, '', 'RUN addgroup -g 1001 -S appgroup && adduser -S appuser -u 1001 -G appgroup', 'USER appuser');
       }
-      if (/^FROM\s+(\w+):latest/i.test(line)) {
-        return line.replace(':latest', ':stable');
+    }
+
+    // Fix DL004: Add HEALTHCHECK if missing
+    if (issueIds.has('DL004') && !hasHealthcheck) {
+      const cmdIndex = fixed.findIndex(line => /^(CMD|ENTRYPOINT)/i.test(line.trim()));
+      if (cmdIndex !== -1) {
+        const portMatch = fixed.find(line => /^EXPOSE\s+(\d+)/.test(line.trim()));
+        const port = portMatch ? portMatch.match(/^EXPOSE\s+(\d+)/)?.[1] : '3000';
+        fixed.splice(cmdIndex, 0, `HEALTHCHECK --interval=30s --timeout=3s CMD wget -qO- http://localhost:${port}/health || exit 1`);
       }
-      if (/^FROM\s+([^:@\s]+)\s*$/i.test(line)) {
-        const match = line.match(/^FROM\s+([^:@\s]+)/i);
-        if (match) {
-          return `FROM ${match[1]}:stable`;
+    }
+
+    // Fix DL012/DL013: Add LABEL maintainer
+    if ((issueIds.has('DL012') || issueIds.has('DL013')) && !hasMaintainerLabel) {
+      const workdirIndex = fixed.findIndex(line => /^WORKDIR/i.test(line.trim()));
+      const insertIndex = workdirIndex !== -1 ? workdirIndex : 1;
+      fixed.splice(insertIndex, 0, 'LABEL maintainer="security@example.com"');
+    }
+
+    // Fix DL031: Add OCI labels
+    if (issueIds.has('DL031') && !hasOCILabels) {
+      const labelIndex = fixed.findIndex(line => /^LABEL/i.test(line.trim()));
+      if (labelIndex !== -1) {
+        fixed.splice(labelIndex + 1, 0,
+          'LABEL org.opencontainers.image.source="https://github.com/example/app"',
+          'LABEL org.opencontainers.image.version="1.0.0"',
+          'LABEL org.opencontainers.image.created="2026-01-03T00:00:00Z"'
+        );
+      }
+    }
+
+    // Fix DL014: Combine multiple RUN commands
+    if (issueIds.has('DL014')) {
+      let inRunSequence = false;
+      let runCommands: string[] = [];
+      const combined: string[] = [];
+
+      for (let i = 0; i < fixed.length; i++) {
+        const line = fixed[i].trim();
+        if (/^RUN\s+/.test(line) && !/addgroup|adduser/.test(line)) {
+          runCommands.push(line.replace(/^RUN\s+/, '').trim());
+          inRunSequence = true;
+        } else {
+          if (inRunSequence && runCommands.length > 0) {
+            combined.push(`RUN ${runCommands.join(' && \\\n    ')}`);
+            runCommands = [];
+            inRunSequence = false;
+          }
+          combined.push(fixed[i]);
         }
       }
-      return line;
-    });
-
-    // Fix 2: Remove hardcoded secrets
-    fixed = fixed.filter(line => {
-      const hasSecret = /password\s*[=:]\s*['"]\w+['"]/i.test(line) ||
-                       /api[_-]?key\s*[=:]\s*['"]\w+['"]/i.test(line) ||
-                       /secret\s*[=:]\s*['"]\w+['"]/i.test(line);
-      return !hasSecret;
-    });
-
-    // Fix 3: Convert shell form to exec form
-    fixed = fixed.map(line => {
-      if (/^CMD\s+node\s+/i.test(line)) {
-        const parts = line.trim().split(/\s+/).slice(1);
-        return `CMD ["${parts.join('", "')}"]`;
+      if (runCommands.length > 0) {
+        combined.push(`RUN ${runCommands.join(' && \\\n    ')}`);
       }
-      if (/^ENTRYPOINT\s+(?!\[)/i.test(line)) {
-        const parts = line.trim().split(/\s+/).slice(1);
-        return `ENTRYPOINT ["${parts.join('", "')}"]`;
-      }
-      return line;
-    });
-
-    // Fix 4: Add WORKDIR if missing
-    if (!hasWorkdir) {
-      const fromIndex = fixed.findIndex(line => /^FROM/i.test(line.trim()));
-      if (fromIndex !== -1) {
-        fixed.splice(fromIndex + 1, 0, 'WORKDIR /app');
-      }
+      fixed = combined;
     }
 
-    // Fix 5: Add USER if missing
-    if (!hasUser) {
-      const cmdIndex = fixed.findIndex(line => /^(CMD|ENTRYPOINT)/i.test(line.trim()));
-      if (cmdIndex !== -1) {
-        fixed.splice(cmdIndex, 0, 'RUN addgroup -g 1001 -S appgroup && adduser -S appuser -u 1001 -G appgroup');
-        fixed.splice(cmdIndex + 1, 0, 'USER appuser');
-      }
-    }
-
-    // Fix 6: Add HEALTHCHECK if missing
-    if (!hasHealthcheck) {
-      const cmdIndex = fixed.findIndex(line => /^(CMD|ENTRYPOINT)/i.test(line.trim()));
-      if (cmdIndex !== -1) {
-        fixed.splice(cmdIndex, 0, 'HEALTHCHECK --interval=30s --timeout=3s CMD wget -qO- http://localhost:3000/health || exit 1');
-      }
-    }
-
-    // Fix 7: Add LABEL maintainer if missing
-    if (!hasLabel) {
-      const fromIndex = fixed.findIndex(line => /^FROM/i.test(line.trim()));
-      if (fromIndex !== -1) {
-        fixed.splice(fromIndex + 1, 0, 'LABEL maintainer="developer@example.com"');
-      }
-    }
-
-    // Fix 8: Clean up apt-get/apk
-    fixed = fixed.map(line => {
-      if (/apt-get install/i.test(line) && !/rm -rf \/var\/lib\/apt/.test(line)) {
-        return line + ' && rm -rf /var/lib/apt/lists/*';
-      }
-      if (/apk add/i.test(line) && !/--no-cache/.test(line)) {
-        return line.replace('apk add', 'apk add --no-cache');
-      }
-      return line;
-    });
-
-    return fixed.filter(line => line.trim() !== '').join('\n');
+    // Clean up empty lines and format
+    return fixed
+      .join('\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
   };
 
   const criticalIssues = summary.results.filter(r => r.severity === 'critical');
